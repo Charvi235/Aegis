@@ -43,6 +43,7 @@ add_executable(aegis
     src/main.cpp
     src/server.cpp
     src/session.cpp
+    src/token_bucket.cpp
 )
 
 target_link_libraries(aegis
@@ -53,7 +54,20 @@ target_link_libraries(aegis
 )
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
-# Kept separate so we can build/run them without starting the server.
-# We'll add test targets in later stages as components are introduced.
+# Each test is its own executable so we can run components in isolation.
+# No external framework — plain C++ main() with EXPECT macros.
 enable_testing()
-# add_subdirectory(test)   # uncomment when test sources exist
+
+# ── test_token_bucket ────────────────────────────────────────────────────────
+# Only needs token_bucket.cpp — no Boost, no server, no HTTP.
+# This is intentional: unit tests should compile fast and have no I/O side
+# effects, so they can run in CI or offline without any running services.
+add_executable(test_token_bucket
+    test/test_token_bucket.cpp
+    src/token_bucket.cpp
+)
+target_include_directories(test_token_bucket PRIVATE include)
+# Inherit the same language-level flags as the main binary (C++17, warnings).
+target_compile_features(test_token_bucket PRIVATE cxx_std_17)
+
+add_test(NAME token_bucket COMMAND test_token_bucket)
