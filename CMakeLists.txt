@@ -72,3 +72,15 @@ target_include_directories(test_token_bucket PRIVATE include)
 target_compile_features(test_token_bucket PRIVATE cxx_std_17)
 
 add_test(NAME token_bucket COMMAND test_token_bucket)
+
+# ── test_lru_cache ────────────────────────────────────────────────────────────
+# LruCache is header-only (template), so no .cpp to compile — just the test.
+add_executable(test_lru_cache
+    test/test_lru_cache.cpp
+)
+target_include_directories(test_lru_cache PRIVATE include)
+target_compile_features(test_lru_cache PRIVATE cxx_std_17)
+# LruCache uses std::thread in its concurrency test, so link Threads.
+target_link_libraries(test_lru_cache PRIVATE Threads::Threads)
+
+add_test(NAME lru_cache COMMAND test_lru_cache)

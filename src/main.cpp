@@ -1,16 +1,15 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // src/main.cpp
 //
-// Entry point.
-//
 // Usage:
-//   ./aegis [port] [threads] [rl_capacity] [rl_refill_rate]
+//   ./aegis [port] [threads] [rl_capacity] [rl_refill_rate] [cache_capacity]
 //
 // Defaults:
-//   port          = 8080
-//   threads       = hardware_concurrency
-//   rl_capacity   = 10    (burst of 10 requests)
-//   rl_refill_rate = 5    (5 tokens/second sustained rate)
+//   port           = 8080
+//   threads        = hardware_concurrency
+//   rl_capacity    = 10   (burst of 10 requests)
+//   rl_refill_rate = 5    (5 tokens/second)
+//   cache_capacity = 256  (max cached responses)
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "aegis/server.hpp"
@@ -34,16 +33,18 @@ int main(int argc, char* argv[])
     std::size_t   num_threads    = std::thread::hardware_concurrency();
     double        rl_capacity    = 10.0;
     double        rl_refill_rate = 5.0;
+    std::size_t   cache_capacity = 256;
 
     try {
         if (argc >= 2) port           = static_cast<std::uint16_t>(std::stoi(argv[1]));
         if (argc >= 3) num_threads    = static_cast<std::size_t>   (std::stoi(argv[2]));
         if (argc >= 4) rl_capacity    = std::stod(argv[3]);
         if (argc >= 5) rl_refill_rate = std::stod(argv[4]);
+        if (argc >= 6) cache_capacity = static_cast<std::size_t>   (std::stoi(argv[5]));
     } catch (const std::exception& e) {
         std::cerr << "[main] Bad argument: " << e.what() << "\n";
         std::cerr << "Usage: " << argv[0]
-                  << " [port] [threads] [rl_capacity] [rl_refill_rate]\n";
+                  << " [port] [threads] [rl_capacity] [rl_refill_rate] [cache_capacity]\n";
         return EXIT_FAILURE;
     }
 
@@ -51,7 +52,8 @@ int main(int argc, char* argv[])
     std::signal(SIGTERM, handle_signal);
 
     try {
-        aegis::Server server{port, num_threads, rl_capacity, rl_refill_rate};
+        aegis::Server server{port, num_threads, rl_capacity,
+                              rl_refill_rate, cache_capacity};
         g_server = &server;
         server.run();
         g_server = nullptr;

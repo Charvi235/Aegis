@@ -15,18 +15,20 @@ using     tcp = net::ip::tcp;
 Server::Server(std::uint16_t port,
                std::size_t   num_threads,
                double        rl_capacity,
-               double        rl_refill_rate)
+               double        rl_refill_rate,
+               std::size_t   cache_capacity)
     : io_ctx_{}
     , acceptor_{io_ctx_, tcp::endpoint{tcp::v4(), port}}
     , work_guard_{net::make_work_guard(io_ctx_)}
     , port_{port}
     , num_threads_{num_threads == 0 ? 1 : num_threads}
     , rate_limiter_{std::make_shared<RateLimiter>(rl_capacity, rl_refill_rate)}
+    , cache_{std::make_shared<ResponseCache>(cache_capacity)}
 {
     std::cout << "[server] Listening on port " << port_
-              << " with " << num_threads_ << " worker thread(s)"
-              << " | rate limit: " << rl_capacity << " tokens, "
-              << rl_refill_rate << " tok/s\n";
+              << " | threads=" << num_threads_
+              << " | rl=" << rl_capacity << " tok, " << rl_refill_rate << " tok/s"
+              << " | cache=" << cache_capacity << " entries\n";
 }
 
 void Server::run()
@@ -34,15 +36,13 @@ void Server::run()
     do_accept();
 
     threads_.reserve(num_threads_ - 1);
-    for (std::size_t i = 0; i < num_threads_ - 1; ++i) {
+    for (std::size_t i = 0; i < num_threads_ - 1; ++i)
         threads_.emplace_back([this] { io_ctx_.run(); });
-    }
 
     io_ctx_.run();
 
-    for (auto& t : threads_) {
+    for (auto& t : threads_)
         if (t.joinable()) t.join();
-    }
 }
 
 void Server::stop()
@@ -60,17 +60,14 @@ void Server::do_accept()
         [this, socket](const boost::system::error_code& ec)
         {
             if (!ec) {
-                // Pass the shared RateLimiter into the new session.
-                // Session holds a shared_ptr copy, so the limiter lives
-                // at least as long as the session does.
-                std::make_shared<Session>(std::move(*socket), rate_limiter_)
-                    ->start();
+                std::make_shared<Session>(
+                    std::move(*socket), rate_limiter_, cache_
+                )->start();
             } else if (ec == net::error::operation_aborted) {
                 return;
             } else {
                 std::cerr << "[server] Accept error: " << ec.message() << "\n";
             }
-
             do_accept();
         }
     );

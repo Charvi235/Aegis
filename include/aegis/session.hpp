@@ -5,17 +5,23 @@
 //
 // HTTP session — one per accepted TCP connection.
 //
-// Stage 4 changes:
-//   - Session now receives a shared_ptr<RateLimiter> at construction.
-//   - make_response() checks the rate limiter keyed by the client's IP.
-//   - If the bucket is empty, it returns HTTP 429 with a Retry-After header
-//     instead of the normal response.
+// Stage 5 changes:
+//   - Session receives a shared_ptr<LruCache<string,string>> alongside the
+//     rate limiter.
+//   - make_response() checks the cache before doing work:
+//       cache hit  → return the cached body directly (HTTP 200).
+//       cache miss → proceed normally, store the result on the way out.
+//   - Only GET 200 responses are cached (standard HTTP cacheability rule).
+//   - The cache key is "METHOD target" (e.g. "GET /api/status").
 //
-// The session does NOT own the RateLimiter; it merely borrows a shared
-// reference.  This makes the ownership chain clear: Server creates it,
-// everyone else just uses it.
+// ── Why cache at the session layer, not in the rate limiter? ─────────────────
+// The cache sits after the rate limiter in the pipeline:
+//   rate limit check → cache lookup → [fetch/proxy] → cache store
+// A rate-limited request never reaches the cache — it's turned away first.
+// This means 429 responses are never cached, which is correct.
 // ─────────────────────────────────────────────────────────────────────────────
 
+#include "aegis/lru_cache.hpp"
 #include "aegis/rate_limiter.hpp"
 
 #include <boost/asio.hpp>
@@ -32,9 +38,14 @@ namespace beast = boost::beast;
 namespace http  = beast::http;
 using     tcp   = net::ip::tcp;
 
+// The cache stores serialised response bodies keyed by "METHOD target".
+using ResponseCache = LruCache<std::string, std::string>;
+
 class Session : public std::enable_shared_from_this<Session> {
 public:
-    Session(tcp::socket socket, std::shared_ptr<RateLimiter> rate_limiter);
+    Session(tcp::socket                   socket,
+            std::shared_ptr<RateLimiter>  rate_limiter,
+            std::shared_ptr<ResponseCache> cache);
 
     void start();
 
@@ -47,17 +58,18 @@ private:
     http::response<http::string_body>
     make_response(const http::request<http::string_body>& req);
 
-    // Build a 429 Too Many Requests response.
-    // Extracted as a named function so the logic is readable and the
-    // Retry-After header is set in one place.
     http::response<http::string_body>
     make_rate_limit_response(const http::request<http::string_body>& req,
                              double retry_after_secs);
 
-    tcp::socket                       socket_;
-    beast::flat_buffer                buffer_;
-    http::request<http::string_body>  request_;
-    std::shared_ptr<RateLimiter>      rate_limiter_;
+    // Build the cache lookup key for a request.
+    static std::string cache_key(const http::request<http::string_body>& req);
+
+    tcp::socket                        socket_;
+    beast::flat_buffer                 buffer_;
+    http::request<http::string_body>   request_;
+    std::shared_ptr<RateLimiter>       rate_limiter_;
+    std::shared_ptr<ResponseCache>     cache_;
 };
 
 } // namespace aegis
