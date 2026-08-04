@@ -21,8 +21,18 @@ add_compile_options(
 # ── Dependencies ─────────────────────────────────────────────────────────────
 # Boost.Asio and Boost.Beast are header-only in modern Boost, but we still
 # need to find the Boost installation for includes and link system/thread.
+# Beast is also header-only; it is bundled with Asio in modern Boost (>=1.66).
+# No extra component is needed for Beast — just the Boost include path.
 find_package(Boost 1.74 REQUIRED COMPONENTS system thread)
 find_package(Threads REQUIRED)          # pthreads on Linux, native on Windows
+
+# On Windows with MSVC, Beast uses some deprecated Winsock APIs that trigger
+# warnings.  Suppress them so our -WX (warnings-as-errors) flag doesn't fire
+# on code we don't own.
+if(MSVC)
+    add_compile_definitions(_WIN32_WINNT=0x0601)   # target Windows 7+
+    add_compile_definitions(_SILENCE_ALL_CXX17_DEPRECATION_WARNINGS)
+endif()
 
 # ── Shared include path ──────────────────────────────────────────────────────
 # Everything under include/ is available as <aegis/...> throughout the project.
@@ -32,6 +42,7 @@ include_directories(include)
 add_executable(aegis
     src/main.cpp
     src/server.cpp
+    src/session.cpp
 )
 
 target_link_libraries(aegis
