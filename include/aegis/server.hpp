@@ -3,13 +3,8 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // aegis/server.hpp
 //
-// Server owns all shared, long-lived resources:
-//   - io_context + worker thread pool
-//   - tcp::acceptor
-//   - RateLimiter   (shared across sessions)
-//   - ResponseCache (shared across sessions)
-//
-// Stage 5 adds the ResponseCache parameter.
+// Server owns all shared, long-lived resources and passes them into Sessions.
+// Stage 6 adds backend_host and backend_port.
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "aegis/lru_cache.hpp"
@@ -18,6 +13,7 @@
 #include <boost/asio.hpp>
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -27,16 +23,20 @@ using ResponseCache = LruCache<std::string, std::string>;
 
 class Server {
 public:
-    // port             – TCP port to listen on
+    // port             – listen port
     // num_threads      – worker threads
-    // rl_capacity      – token bucket capacity per IP
+    // rl_capacity      – token bucket burst size per IP
     // rl_refill_rate   – tokens/second per IP
-    // cache_capacity   – max cached responses (LRU eviction)
+    // cache_capacity   – max cached responses
+    // backend_host     – upstream hostname or IP
+    // backend_port     – upstream port (string, e.g. "9090")
     explicit Server(std::uint16_t port,
                     std::size_t   num_threads    = std::thread::hardware_concurrency(),
                     double        rl_capacity    = 10.0,
                     double        rl_refill_rate  = 5.0,
-                    std::size_t   cache_capacity  = 256);
+                    std::size_t   cache_capacity  = 256,
+                    std::string   backend_host    = "localhost",
+                    std::string   backend_port    = "9090");
 
     void run();
     void stop();
@@ -53,8 +53,11 @@ private:
     std::size_t              num_threads_;
     std::vector<std::thread> threads_;
 
-    std::shared_ptr<RateLimiter>    rate_limiter_;
-    std::shared_ptr<ResponseCache>  cache_;
+    std::shared_ptr<RateLimiter>   rate_limiter_;
+    std::shared_ptr<ResponseCache> cache_;
+
+    std::string backend_host_;
+    std::string backend_port_;
 };
 
 } // namespace aegis

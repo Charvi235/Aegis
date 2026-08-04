@@ -16,7 +16,9 @@ Server::Server(std::uint16_t port,
                std::size_t   num_threads,
                double        rl_capacity,
                double        rl_refill_rate,
-               std::size_t   cache_capacity)
+               std::size_t   cache_capacity,
+               std::string   backend_host,
+               std::string   backend_port)
     : io_ctx_{}
     , acceptor_{io_ctx_, tcp::endpoint{tcp::v4(), port}}
     , work_guard_{net::make_work_guard(io_ctx_)}
@@ -24,11 +26,14 @@ Server::Server(std::uint16_t port,
     , num_threads_{num_threads == 0 ? 1 : num_threads}
     , rate_limiter_{std::make_shared<RateLimiter>(rl_capacity, rl_refill_rate)}
     , cache_{std::make_shared<ResponseCache>(cache_capacity)}
+    , backend_host_{std::move(backend_host)}
+    , backend_port_{std::move(backend_port)}
 {
     std::cout << "[server] Listening on port " << port_
               << " | threads=" << num_threads_
               << " | rl=" << rl_capacity << " tok, " << rl_refill_rate << " tok/s"
-              << " | cache=" << cache_capacity << " entries\n";
+              << " | cache=" << cache_capacity << " entries"
+              << " | backend=" << backend_host_ << ":" << backend_port_ << "\n";
 }
 
 void Server::run()
@@ -61,7 +66,11 @@ void Server::do_accept()
         {
             if (!ec) {
                 std::make_shared<Session>(
-                    std::move(*socket), rate_limiter_, cache_
+                    std::move(*socket),
+                    rate_limiter_,
+                    cache_,
+                    backend_host_,
+                    backend_port_
                 )->start();
             } else if (ec == net::error::operation_aborted) {
                 return;
