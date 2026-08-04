@@ -1,10 +1,45 @@
+# ── Build output ─────────────────────────────────────────────────────────────
 build/
-*.o
-*.out
-.vscode/
-.idea/
+out/
+bin/
+lib/
+
+# ── CMake generated files ─────────────────────────────────────────────────────
 CMakeFiles/
 CMakeCache.txt
 cmake_install.cmake
+CTestTestfile.cmake
+_deps/
 compile_commands.json
+*.cmake
+!CMakeLists.txt
+
+# ── Compiled object files ─────────────────────────────────────────────────────
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dll
+*.dylib
+*.pdb
+*.ilk
+*.exp
+
+# ── Executables ───────────────────────────────────────────────────────────────
+*.exe
+*.out
+
+# ── Editor / IDE ──────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.user
+*.suo
+*.sln.docstates
+.vs/
+
+# ── Logs & temp ───────────────────────────────────────────────────────────────
 *.log
+*.tmp
+*.swp
+*~
