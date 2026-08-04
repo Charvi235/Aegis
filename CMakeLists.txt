@@ -44,6 +44,7 @@ add_executable(aegis
     src/server.cpp
     src/session.cpp
     src/token_bucket.cpp
+    src/rate_limiter.cpp
 )
 
 target_link_libraries(aegis
