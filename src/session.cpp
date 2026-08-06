@@ -1,6 +1,15 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // src/session.cpp
 //
+// Stage 9 addition — GET /stats admin endpoint:
+//   Intercepted at the very top of on_read(), before the rate limiter and
+//   before the total_requests counter, so polling from the dashboard never
+//   burns tokens or skews the metrics being observed.
+//   Response is JSON with CORS headers so a browser on localhost:5173 can
+//   fetch it from localhost:8080 without a proxy.
+//   An OPTIONS preflight is also handled here (browsers send this first for
+//   cross-origin requests with a JSON content-type).
+//
 // Stage 7 additions (marked ── Stage 7 ──):
 //   total_requests   incremented once per successfully parsed request
 //   blocked_requests incremented when rate limiter denies (→ 429)
@@ -11,11 +20,13 @@
 // All increments use fetch_add(1, memory_order_relaxed) — see
 // atomic_stats.hpp for the full rationale.
 //
-// Request flow (unchanged from Stage 6):
+// Request flow:
 //
 //   do_read()
 //     └─ http::async_read()
 //         └─ on_read()
+//             ├─ OPTIONS /stats?         → do_write(204 + CORS preflight)
+//             ├─ GET /stats?             → do_write(200 JSON + CORS)
 //             ├─ rate limit denied?      → do_write(429)
 //             ├─ GET + cache HIT?        → do_write(cached 200)
 //             └─ otherwise              → proxy_request()
@@ -32,6 +43,7 @@
 
 #include <cmath>
 #include <iostream>
+#include <sstream>
 #include <string>
 
 namespace aegis {
@@ -95,6 +107,12 @@ void Session::on_read(beast::error_code ec, std::size_t /*n*/)
         do_close();
         return;
     }
+
+    // ── Stage 9: intercept admin /stats route ────────────────────────────
+    // Must come BEFORE total_requests increment and BEFORE rate limiter so:
+    //   (a) dashboard polling doesn't consume tokens or trigger 429s, and
+    //   (b) the counters reflect real gateway traffic, not monitoring noise.
+    if (try_handle_stats()) return;
 
     // ── Stage 7: count every successfully parsed request ─────────────────
     stats_->total_requests.fetch_add(1, std::memory_order_relaxed);
@@ -264,6 +282,103 @@ void Session::on_write(beast::error_code ec, std::size_t /*n*/, bool keep_alive)
     } else {
         do_close();
     }
+}
+
+// ── Stage 9: /stats admin endpoint ───────────────────────────────────────────
+//
+// ── Why this route bypasses the rate limiter and cache ───────────────────────
+// The rate limiter exists to protect the backend from malicious traffic.
+// GET /stats never touches the backend — it reads from shared memory
+// (AtomicStats) and returns instantly.  Applying rate limiting to the
+// dashboard's polling would mean the dashboard itself could trigger 429s,
+// which would (a) look broken and (b) increment blocked_requests, polluting
+// the very metrics the dashboard displays.  Bypassing is the correct choice
+// for any internal admin / health-check route.
+//
+// ── CORS headers — why they're needed ────────────────────────────────────────
+// The React dashboard runs on http://localhost:5173 (Vite dev server) and
+// fetches from http://localhost:8080.  Different ports = different "origins"
+// in the browser security model.  Without CORS headers the browser blocks
+// the response before JavaScript can read it.  The four headers we add are:
+//
+//   Access-Control-Allow-Origin: *
+//     Permit any origin.  Safe for a local-only admin endpoint.
+//     In production you'd restrict this to the dashboard's domain.
+//
+//   Access-Control-Allow-Methods: GET, OPTIONS
+//     Only allow safe read-only methods on this route.
+//
+//   Access-Control-Allow-Headers: Content-Type
+//     Required because the browser sends Content-Type in its preflight.
+//
+//   Access-Control-Max-Age: 86400
+//     Cache the preflight result for 24 hours, so the browser doesn't
+//     repeat the OPTIONS round-trip on every poll interval.
+//
+// ── OPTIONS preflight ─────────────────────────────────────────────────────────
+// Before a cross-origin GET (or any request with a non-simple header), the
+// browser sends an OPTIONS request to ask "is this allowed?".  We must
+// respond 204 No Content with the CORS headers, or the actual GET will
+// be blocked before it's even sent.
+
+bool Session::try_handle_stats()
+{
+    // Only intercept the /stats path — everything else falls through.
+    const auto target = std::string{request_.target()};
+    if (target != "/stats") return false;
+
+    const auto method = request_.method();
+
+    // ── Handle CORS preflight ─────────────────────────────────────────────
+    if (method == http::verb::options) {
+        http::response<http::string_body> res{
+            http::status::no_content, request_.version()};
+        res.set(http::field::server, "Aegis/0.1");
+        add_cors_headers(res);
+        res.keep_alive(request_.keep_alive());
+        res.prepare_payload();
+        do_write(std::move(res));
+        return true;
+    }
+
+    // ── Only GET is allowed beyond this point ─────────────────────────────
+    if (method != http::verb::get) {
+        do_write(make_error_response(
+            http::status::method_not_allowed,
+            "Only GET is supported on /stats\r\n"));
+        return true;
+    }
+
+    // ── Build JSON from atomic snapshot ──────────────────────────────────
+    auto snap = stats_->snapshot();
+
+    std::ostringstream json;
+    json << "{"
+         << "\"total_requests\":"   << snap.total_requests   << ","
+         << "\"allowed_requests\":" << snap.allowed_requests << ","
+         << "\"blocked_requests\":" << snap.blocked_requests << ","
+         << "\"cache_hits\":"       << snap.cache_hits       << ","
+         << "\"cache_misses\":"     << snap.cache_misses
+         << "}";
+
+    http::response<http::string_body> res{
+        http::status::ok, request_.version()};
+    res.set(http::field::server,       "Aegis/0.1");
+    res.set(http::field::content_type, "application/json");
+    add_cors_headers(res);
+    res.keep_alive(request_.keep_alive());
+    res.body() = json.str();
+    res.prepare_payload();
+    do_write(std::move(res));
+    return true;
+}
+
+void Session::add_cors_headers(http::response<http::string_body>& res) const
+{
+    res.set("Access-Control-Allow-Origin",  "*");
+    res.set("Access-Control-Allow-Methods", "GET, OPTIONS");
+    res.set("Access-Control-Allow-Headers", "Content-Type");
+    res.set("Access-Control-Max-Age",       "86400");
 }
 
 // ── Explicit close helper ─────────────────────────────────────────────────────

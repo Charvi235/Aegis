@@ -65,6 +65,13 @@ private:
 
     void do_close();
 
+    // ── Stage 9: /stats admin endpoint helpers ────────────────────────────
+    // Returns true if the request was handled internally (caller must return).
+    bool try_handle_stats();
+    // Adds the four CORS headers required for cross-origin browser fetch.
+    // Called on every /stats response (200 and 204).
+    void add_cors_headers(http::response<http::string_body>& res) const;
+
     // ── Members ──────────────────────────────────────────────────────────
     tcp::socket                        socket_;
     beast::flat_buffer                 buffer_;
