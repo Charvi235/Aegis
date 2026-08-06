@@ -110,7 +110,7 @@ void Session::on_read(beast::error_code ec, std::size_t /*n*/)
             res.set("X-Cache", "HIT");
             res.keep_alive(request_.keep_alive());
             res.body() = std::move(cached.value());
-            res.prepare_body();
+            res.prepare_payload();
             do_write(std::move(res));
             return;
         }
@@ -217,7 +217,7 @@ void Session::on_proxy_response(beast::error_code                  ec,
 
     res.keep_alive(request_.keep_alive());
     res.body() = std::move(backend_res.body());
-    res.prepare_body();
+    res.prepare_payload();
 
     do_write(std::move(res));
 }
@@ -268,7 +268,7 @@ Session::make_rate_limit_response(double retry_after_secs)
     res.body() = "Rate limit exceeded. Retry after "
                + std::to_string(wait) + " second(s).\r\n";
     res.keep_alive(false);
-    res.prepare_body();
+    res.prepare_payload();
     return res;
 }
 
@@ -280,7 +280,7 @@ Session::make_error_response(http::status status, std::string_view message)
     res.set(http::field::content_type, "text/plain");
     res.keep_alive(false);
     res.body() = std::string{message};
-    res.prepare_body();
+    res.prepare_payload();
     return res;
 }
 
