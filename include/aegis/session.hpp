@@ -5,26 +5,12 @@
 //
 // HTTP session — one per accepted TCP connection.
 //
-// Stage 6 changes:
-//   - Session receives backend_host + backend_port at construction.
-//   - make_response() is gone; replaced by an async pipeline:
-//       on_read() → check rate limit + cache → proxy_request() or send cached
-//   - proxy_request() creates a Proxy, calls fetch(), and the callback
-//     on_proxy_response() stores the result in the cache and writes it back
-//     to the client.
-//   - Non-GET methods cause a cache eviction so stale GET responses are
-//     invalidated when the backend state changes.
-//
-// ── Why on_read now calls proxy_request() instead of do_write() directly? ────
-// Stages 2–5 built the response synchronously in make_response() and called
-// do_write() immediately.  That worked for local logic (rate limit, cache).
-// Proxying is inherently async (network round-trip to the backend), so we
-// can't block waiting for it.  Instead on_read() either:
-//   a) serves from cache (sync → do_write immediately), or
-//   b) launches an async Proxy fetch, whose callback calls do_write().
-// Both paths converge at do_write(), so the write/keep-alive logic is unchanged.
+// Stage 7 adds a shared_ptr<AtomicStats> member.  Session increments the
+// relevant counter at each decision point in on_read() using fetch_add with
+// memory_order_relaxed — see atomic_stats.hpp for the full rationale.
 // ─────────────────────────────────────────────────────────────────────────────
 
+#include "aegis/atomic_stats.hpp"
 #include "aegis/lru_cache.hpp"
 #include "aegis/proxy.hpp"
 #include "aegis/rate_limiter.hpp"
@@ -50,6 +36,7 @@ public:
     Session(tcp::socket                    socket,
             std::shared_ptr<RateLimiter>   rate_limiter,
             std::shared_ptr<ResponseCache> cache,
+            std::shared_ptr<AtomicStats>   stats,        // Stage 7
             std::string                    backend_host,
             std::string                    backend_port);
 
@@ -63,11 +50,7 @@ private:
     void on_write(beast::error_code ec, std::size_t n, bool keep_alive);
 
     // ── Proxy path ───────────────────────────────────────────────────────
-    // Called when there's a cache miss (or a non-GET that bypasses the cache).
-    // Launches a Proxy::fetch() and wires the result back to do_write().
     void proxy_request();
-
-    // Callback invoked by Proxy::fetch() when the backend responds.
     void on_proxy_response(beast::error_code                  ec,
                            http::response<http::string_body>  backend_response);
 
@@ -80,9 +63,6 @@ private:
 
     static std::string cache_key(const http::request<http::string_body>& req);
 
-    // Shutdown and close the client socket cleanly.
-    // Centralised so all error paths call the same two-step sequence
-    // (shutdown sends FIN; close releases the OS fd).
     void do_close();
 
     // ── Members ──────────────────────────────────────────────────────────
@@ -91,6 +71,7 @@ private:
     http::request<http::string_body>   request_;
     std::shared_ptr<RateLimiter>       rate_limiter_;
     std::shared_ptr<ResponseCache>     cache_;
+    std::shared_ptr<AtomicStats>       stats_;          // Stage 7
     std::string                        backend_host_;
     std::string                        backend_port_;
 };

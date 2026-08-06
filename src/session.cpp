@@ -1,9 +1,17 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // src/session.cpp
 //
-// Stage 6: full reverse proxy pipeline.
+// Stage 7 additions (marked ── Stage 7 ──):
+//   total_requests   incremented once per successfully parsed request
+//   blocked_requests incremented when rate limiter denies (→ 429)
+//   allowed_requests incremented when rate limiter permits
+//   cache_hits       incremented on a GET cache HIT (before do_write)
+//   cache_misses     incremented on a GET cache MISS (before proxy_request)
 //
-// Request flow:
+// All increments use fetch_add(1, memory_order_relaxed) — see
+// atomic_stats.hpp for the full rationale.
+//
+// Request flow (unchanged from Stage 6):
 //
 //   do_read()
 //     └─ http::async_read()
@@ -33,6 +41,7 @@ namespace aegis {
 Session::Session(tcp::socket                    socket,
                  std::shared_ptr<RateLimiter>   rate_limiter,
                  std::shared_ptr<ResponseCache> cache,
+                 std::shared_ptr<AtomicStats>   stats,
                  std::string                    backend_host,
                  std::string                    backend_port)
     : socket_{std::move(socket)}
@@ -40,6 +49,7 @@ Session::Session(tcp::socket                    socket,
     , request_{}
     , rate_limiter_{std::move(rate_limiter)}
     , cache_{std::move(cache)}
+    , stats_{std::move(stats)}
     , backend_host_{std::move(backend_host)}
     , backend_port_{std::move(backend_port)}
 {}
@@ -76,17 +86,20 @@ void Session::on_read(beast::error_code ec, std::size_t /*n*/)
     }
 
     // ── Any other read error (malformed HTTP, connection reset, etc.) ─────
-    // We close explicitly rather than just returning so the OS socket handle
-    // is released immediately instead of waiting for the shared_ptr to drop.
+    // Close explicitly to release the OS fd immediately.
+    // Note: we do NOT count malformed/incomplete reads in total_requests —
+    // only successfully parsed HTTP messages that go through the full pipeline
+    // are meaningful traffic to measure.
     if (ec) {
         std::cerr << "[session] Read error: " << ec.message() << "\n";
         do_close();
         return;
     }
 
+    // ── Stage 7: count every successfully parsed request ─────────────────
+    stats_->total_requests.fetch_add(1, std::memory_order_relaxed);
+
     // ── Log the request — guard remote_endpoint() against a race ─────────
-    // If the peer disconnected between the read completing and our handler
-    // running, remote_endpoint() can throw.  Catch and continue gracefully.
     std::string client_ip;
     try {
         auto ep   = socket_.remote_endpoint();
@@ -102,14 +115,20 @@ void Session::on_read(beast::error_code ec, std::size_t /*n*/)
     }
 
     // ── Rate limit ────────────────────────────────────────────────────────
-
     if (!rate_limiter_->is_allowed(client_ip)) {
         double wait = rate_limiter_->retry_after(client_ip);
+
+        // ── Stage 7 ──────────────────────────────────────────────────────
+        stats_->blocked_requests.fetch_add(1, std::memory_order_relaxed);
+
         std::cout << "[session] Rate limited: " << client_ip
                   << " — retry in " << wait << "s\n";
         do_write(make_rate_limit_response(wait));
         return;
     }
+
+    // ── Stage 7: request cleared the rate limiter ─────────────────────────
+    stats_->allowed_requests.fetch_add(1, std::memory_order_relaxed);
 
     // ── Cache check (GET only) ────────────────────────────────────────────
     const bool is_get = (request_.method() == http::verb::get);
@@ -117,6 +136,9 @@ void Session::on_read(beast::error_code ec, std::size_t /*n*/)
     if (is_get) {
         auto cached = cache_->get(cache_key(request_));
         if (cached.has_value()) {
+            // ── Stage 7 ──────────────────────────────────────────────────
+            stats_->cache_hits.fetch_add(1, std::memory_order_relaxed);
+
             std::cout << "[session] Cache HIT: " << cache_key(request_) << "\n";
 
             http::response<http::string_body> res{
@@ -130,16 +152,14 @@ void Session::on_read(beast::error_code ec, std::size_t /*n*/)
             do_write(std::move(res));
             return;
         }
+
+        // ── Stage 7 ──────────────────────────────────────────────────────
+        stats_->cache_misses.fetch_add(1, std::memory_order_relaxed);
+
         std::cout << "[session] Cache MISS: " << cache_key(request_) << "\n";
     }
 
     // ── Mutating methods — evict stale cache entries ──────────────────────
-    // If a POST/PUT/PATCH/DELETE arrives for the same path as a cached GET,
-    // the backend state has changed; evict so the next GET re-fetches.
-    //
-    // We use a synthetic GET key because that's how the cached entry was
-    // stored.  This is a best-effort heuristic — a production gateway would
-    // use cache-control headers and ETags for more precise invalidation.
     if (!is_get) {
         const std::string evict_key = "GET " + std::string{request_.target()};
         cache_->evict(evict_key);
@@ -153,14 +173,8 @@ void Session::on_read(beast::error_code ec, std::size_t /*n*/)
 
 void Session::proxy_request()
 {
-    // Build a copy of the request to forward.  We copy (not move) because
-    // request_ is a member we may need for logging after the proxy returns.
     http::request<http::string_body> forwarded = request_;
 
-    // The Proxy needs the io_context to create its own socket and resolver.
-    // socket_.get_executor() returns the executor (which carries the
-    // io_context reference) without exposing io_context directly.
-    // net::get_associated_executor is idiomatic Asio for this.
     auto& ioc = static_cast<net::io_context&>(
         socket_.get_executor().context());
 
@@ -168,8 +182,6 @@ void Session::proxy_request()
 
     proxy->fetch(
         std::move(forwarded),
-        // Capture self so the Session stays alive for the backend round-trip.
-        // Capture proxy so it stays alive until the callback fires.
         [self = shared_from_this(), proxy](
             beast::error_code                 ec,
             http::response<http::string_body> backend_response)
@@ -194,18 +206,6 @@ void Session::on_proxy_response(beast::error_code                  ec,
               << " for " << request_.method_string()
               << " " << request_.target() << "\n";
 
-    // ── Cache store: only successful GET responses ────────────────────────
-    // We cache the response body, not the full serialised message, so that
-    // when we serve from cache we can reconstruct a proper response with
-    // our own headers (server name, X-Cache, etc.) rather than forwarding
-    // the backend's headers verbatim.
-    //
-    // Why not cache the full response?
-    //   - Some backend headers are hop-by-hop (Connection, Transfer-Encoding)
-    //     and should not be forwarded to clients.
-    //   - Headers like Date change every response; caching them would serve
-    //     stale dates.
-    //   - Caching only the body is simpler and sufficient for a portfolio demo.
     const bool is_get_ok = (request_.method() == http::verb::get)
                          && (backend_res.result() == http::status::ok);
 
@@ -213,9 +213,6 @@ void Session::on_proxy_response(beast::error_code                  ec,
         cache_->put(cache_key(request_), backend_res.body());
     }
 
-    // ── Build the response to send to the client ──────────────────────────
-    // We forward the backend's status and body, but set our own headers so
-    // the client sees "Aegis" as the server and we control hop-by-hop fields.
     http::response<http::string_body> res{
         backend_res.result(),
         request_.version()
@@ -223,7 +220,6 @@ void Session::on_proxy_response(beast::error_code                  ec,
     res.set(http::field::server, "Aegis/0.1");
     res.set("X-Cache", "MISS");
 
-    // Forward content-type from backend if present; default to text/plain.
     if (backend_res.count(http::field::content_type)) {
         res.set(http::field::content_type,
                 backend_res[http::field::content_type]);
@@ -260,7 +256,7 @@ void Session::on_write(beast::error_code ec, std::size_t /*n*/, bool keep_alive)
 {
     if (ec) {
         std::cerr << "[session] Write error: " << ec.message() << "\n";
-        do_close();   // explicit close — don't rely on destructor alone
+        do_close();
         return;
     }
     if (keep_alive) {
@@ -271,10 +267,7 @@ void Session::on_write(beast::error_code ec, std::size_t /*n*/, bool keep_alive)
 }
 
 // ── Explicit close helper ─────────────────────────────────────────────────────
-// Centralising the shutdown+close sequence means error paths can't forget
-// either step.  shutdown() flushes the TCP send buffer and sends FIN;
-// close() releases the OS file descriptor.  We ignore errors from both
-// because the socket may already be half-closed when we reach here.
+
 void Session::do_close()
 {
     beast::error_code ignored;

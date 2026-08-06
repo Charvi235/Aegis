@@ -86,3 +86,15 @@ target_compile_features(test_lru_cache PRIVATE cxx_std_17)
 target_link_libraries(test_lru_cache PRIVATE Threads::Threads)
 
 add_test(NAME lru_cache COMMAND test_lru_cache)
+
+# ── test_atomic_stats ─────────────────────────────────────────────────────────
+# AtomicStats is header-only, so no .cpp.  The test links Threads for the
+# concurrent increment test.
+add_executable(test_atomic_stats
+    test/test_atomic_stats.cpp
+)
+target_include_directories(test_atomic_stats PRIVATE include)
+target_compile_features(test_atomic_stats PRIVATE cxx_std_17)
+target_link_libraries(test_atomic_stats PRIVATE Threads::Threads)
+
+add_test(NAME atomic_stats COMMAND test_atomic_stats)
