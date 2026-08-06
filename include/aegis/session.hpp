@@ -80,6 +80,11 @@ private:
 
     static std::string cache_key(const http::request<http::string_body>& req);
 
+    // Shutdown and close the client socket cleanly.
+    // Centralised so all error paths call the same two-step sequence
+    // (shutdown sends FIN; close releases the OS fd).
+    void do_close();
+
     // ── Members ──────────────────────────────────────────────────────────
     tcp::socket                        socket_;
     beast::flat_buffer                 buffer_;

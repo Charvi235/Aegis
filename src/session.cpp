@@ -69,23 +69,39 @@ void Session::do_read()
 
 void Session::on_read(beast::error_code ec, std::size_t /*n*/)
 {
+    // ── Client closed the connection cleanly ──────────────────────────────
     if (ec == http::error::end_of_stream) {
-        beast::error_code ignored;
-        socket_.shutdown(tcp::socket::shutdown_both, ignored);
+        do_close();
         return;
     }
+
+    // ── Any other read error (malformed HTTP, connection reset, etc.) ─────
+    // We close explicitly rather than just returning so the OS socket handle
+    // is released immediately instead of waiting for the shared_ptr to drop.
     if (ec) {
         std::cerr << "[session] Read error: " << ec.message() << "\n";
+        do_close();
         return;
     }
 
-    std::cout << "[session] " << request_.method_string()
-              << " " << request_.target()
-              << " from " << socket_.remote_endpoint() << "\n";
+    // ── Log the request — guard remote_endpoint() against a race ─────────
+    // If the peer disconnected between the read completing and our handler
+    // running, remote_endpoint() can throw.  Catch and continue gracefully.
+    std::string client_ip;
+    try {
+        auto ep   = socket_.remote_endpoint();
+        client_ip = ep.address().to_string();
+        std::cout << "[session] " << request_.method_string()
+                  << " " << request_.target()
+                  << " from " << ep << "\n";
+    } catch (const boost::system::system_error& e) {
+        std::cerr << "[session] Could not read remote endpoint: "
+                  << e.what() << " — closing\n";
+        do_close();
+        return;
+    }
 
     // ── Rate limit ────────────────────────────────────────────────────────
-    const std::string client_ip =
-        socket_.remote_endpoint().address().to_string();
 
     if (!rate_limiter_->is_allowed(client_ip)) {
         double wait = rate_limiter_->retry_after(client_ip);
@@ -244,14 +260,26 @@ void Session::on_write(beast::error_code ec, std::size_t /*n*/, bool keep_alive)
 {
     if (ec) {
         std::cerr << "[session] Write error: " << ec.message() << "\n";
+        do_close();   // explicit close — don't rely on destructor alone
         return;
     }
     if (keep_alive) {
         do_read();
     } else {
-        beast::error_code ignored;
-        socket_.shutdown(tcp::socket::shutdown_both, ignored);
+        do_close();
     }
+}
+
+// ── Explicit close helper ─────────────────────────────────────────────────────
+// Centralising the shutdown+close sequence means error paths can't forget
+// either step.  shutdown() flushes the TCP send buffer and sends FIN;
+// close() releases the OS file descriptor.  We ignore errors from both
+// because the socket may already be half-closed when we reach here.
+void Session::do_close()
+{
+    beast::error_code ignored;
+    socket_.shutdown(tcp::socket::shutdown_both, ignored);
+    socket_.close(ignored);
 }
 
 // ── Helper response builders ──────────────────────────────────────────────────

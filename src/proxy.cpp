@@ -78,6 +78,7 @@ void Proxy::on_resolve(beast::error_code ec,
 {
     if (ec) {
         std::cerr << "[proxy] Resolve error: " << ec.message() << "\n";
+        // No socket was opened yet; just fire the callback.
         callback_(ec, {});
         return;
     }
@@ -107,6 +108,10 @@ void Proxy::on_connect(beast::error_code ec,
 {
     if (ec) {
         std::cerr << "[proxy] Connect error: " << ec.message() << "\n";
+        // async_connect may have partially opened the socket; close it
+        // explicitly so the fd is released before the shared_ptr drops.
+        beast::error_code ignored;
+        socket_.close(ignored);
         callback_(ec, {});
         return;
     }
@@ -131,6 +136,9 @@ void Proxy::on_write(beast::error_code ec, std::size_t /*n*/)
 {
     if (ec) {
         std::cerr << "[proxy] Write error: " << ec.message() << "\n";
+        beast::error_code ignored;
+        socket_.shutdown(tcp::socket::shutdown_both, ignored);
+        socket_.close(ignored);
         callback_(ec, {});
         return;
     }
