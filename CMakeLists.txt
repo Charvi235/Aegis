@@ -13,10 +13,11 @@ endif()
 
 # ── Compiler warnings ────────────────────────────────────────────────────────
 # Treat warnings as errors during development so bad patterns don't accumulate.
-add_compile_options(
-    $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic -Werror>
-    $<$<CXX_COMPILER_ID:MSVC>:/W4 /WX>
-)
+if(MSVC)
+    add_compile_options(/W4 /WX)
+else()
+    add_compile_options(-Wall -Wextra -Wpedantic -Werror)
+endif()
 
 # ── Dependencies ─────────────────────────────────────────────────────────────
 # Boost.Asio and Boost.Beast are header-only in modern Boost, but we still
