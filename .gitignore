@@ -43,3 +43,13 @@ compile_commands.json
 *.tmp
 *.swp
 *~
+
+
+
+# ── React dashboard ─────────────────────────────────────────────────────────
+dashboard/node_modules/
+dashboard/dist/
+dashboard/.vite/
+
+# ── Telemetry logs ──────────────────────────────────────────────────────────
+*.jsonl
