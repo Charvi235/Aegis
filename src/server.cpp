@@ -19,7 +19,8 @@ Server::Server(std::uint16_t port,
                std::size_t   cache_capacity,
                std::string   backend_host,
                std::string   backend_port,
-               std::uint32_t stats_interval_s)
+               std::uint32_t stats_interval_s,
+               std::string   telemetry_log_path)
     : io_ctx_{}
     , acceptor_{io_ctx_, tcp::endpoint{tcp::v4(), port}}
     , work_guard_{net::make_work_guard(io_ctx_)}
@@ -29,6 +30,7 @@ Server::Server(std::uint16_t port,
     , rate_limiter_{std::make_shared<RateLimiter>(rl_capacity, rl_refill_rate)}
     , cache_{std::make_shared<ResponseCache>(cache_capacity)}
     , stats_{std::make_shared<AtomicStats>()}
+    , telemetry_{std::make_shared<TelemetryLogger>(telemetry_log_path)}
 {
     backend_host_ = std::move(backend_host);
     backend_port_ = std::move(backend_port);
@@ -96,6 +98,7 @@ void Server::do_accept()
                     rate_limiter_,
                     cache_,
                     stats_,          // Stage 7
+                    telemetry_,      // Stage 8
                     backend_host_,
                     backend_port_
                 )->start();

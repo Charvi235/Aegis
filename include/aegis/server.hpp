@@ -11,7 +11,7 @@
 #include "aegis/atomic_stats.hpp"
 #include "aegis/lru_cache.hpp"
 #include "aegis/rate_limiter.hpp"
-
+#include "aegis/telemetry_logger.hpp"
 #include <boost/asio.hpp>
 #include <atomic>
 #include <cstdint>
@@ -41,7 +41,8 @@ public:
                     std::size_t   cache_capacity   = 256,
                     std::string   backend_host     = "localhost",
                     std::string   backend_port     = "9090",
-                    std::uint32_t stats_interval_s = 10);
+                    std::uint32_t stats_interval_s = 10,
+                    std::string   telemetry_log_path = "telemetry.jsonl");
 
     void run();
     void stop();
@@ -74,7 +75,8 @@ private:
     // ── Shared per-request resources ─────────────────────────────────────
     std::shared_ptr<RateLimiter>   rate_limiter_;
     std::shared_ptr<ResponseCache> cache_;
-    std::shared_ptr<AtomicStats>   stats_;           // Stage 7
+    std::shared_ptr<AtomicStats>   stats_;             // Stage 7
+    std::shared_ptr<TelemetryLogger> telemetry_;     // Stage 8       // Stage 7
 
     std::string backend_host_;
     std::string backend_port_;
