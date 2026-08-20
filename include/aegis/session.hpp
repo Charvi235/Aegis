@@ -14,13 +14,13 @@
 #include "aegis/lru_cache.hpp"
 #include "aegis/proxy.hpp"
 #include "aegis/rate_limiter.hpp"
-
+#include "aegis/telemetry_logger.hpp"
 #include <boost/asio.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
-
 #include <memory>
 #include <string>
+#include <chrono>
 
 namespace aegis {
 
@@ -37,6 +37,7 @@ public:
             std::shared_ptr<RateLimiter>   rate_limiter,
             std::shared_ptr<ResponseCache> cache,
             std::shared_ptr<AtomicStats>   stats,        // Stage 7
+            std::shared_ptr<TelemetryLogger> telemetry, 
             std::string                    backend_host,
             std::string                    backend_port);
 
@@ -64,6 +65,10 @@ private:
     static std::string cache_key(const http::request<http::string_body>& req);
 
     void do_close();
+    // ── Stage 8: telemetry logging ─────────────────────────────────────
+    // Pushes one TelemetryEvent to the queue. Called right before each
+    // do_write() so we capture the final status code and latency.
+    void log_telemetry(int status_code);
 
     // ── Stage 9: /stats admin endpoint helpers ────────────────────────────
     // Returns true if the request was handled internally (caller must return).
@@ -75,10 +80,14 @@ private:
     // ── Members ──────────────────────────────────────────────────────────
     tcp::socket                        socket_;
     beast::flat_buffer                 buffer_;
+    std::chrono::steady_clock::time_point request_start_;
     http::request<http::string_body>   request_;
     std::shared_ptr<RateLimiter>       rate_limiter_;
     std::shared_ptr<ResponseCache>     cache_;
     std::shared_ptr<AtomicStats>       stats_;          // Stage 7
+
+    std::shared_ptr<TelemetryLogger>   telemetry_;      // Stage 8
+    std::string                        client_ip_;
     std::string                        backend_host_;
     std::string                        backend_port_;
 };

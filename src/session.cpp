@@ -54,6 +54,7 @@ Session::Session(tcp::socket                    socket,
                  std::shared_ptr<RateLimiter>   rate_limiter,
                  std::shared_ptr<ResponseCache> cache,
                  std::shared_ptr<AtomicStats>   stats,
+                 std::shared_ptr<TelemetryLogger> telemetry,
                  std::string                    backend_host,
                  std::string                    backend_port)
     : socket_{std::move(socket)}
@@ -62,6 +63,7 @@ Session::Session(tcp::socket                    socket,
     , rate_limiter_{std::move(rate_limiter)}
     , cache_{std::move(cache)}
     , stats_{std::move(stats)}
+    , telemetry_{std::move(telemetry)}
     , backend_host_{std::move(backend_host)}
     , backend_port_{std::move(backend_port)}
 {}
@@ -78,6 +80,7 @@ void Session::start()
 void Session::do_read()
 {
     request_ = {};
+    request_start_ = std::chrono::steady_clock::now();
     http::async_read(
         socket_, buffer_, request_,
         [self = shared_from_this()](beast::error_code ec, std::size_t n)
@@ -122,12 +125,14 @@ void Session::on_read(beast::error_code ec, std::size_t /*n*/)
     try {
         auto ep   = socket_.remote_endpoint();
         client_ip = ep.address().to_string();
+        client_ip_ = client_ip;
         std::cout << "[session] " << request_.method_string()
                   << " " << request_.target()
                   << " from " << ep << "\n";
     } catch (const boost::system::system_error& e) {
         std::cerr << "[session] Could not read remote endpoint: "
                   << e.what() << " — closing\n";
+
         do_close();
         return;
     }
@@ -141,6 +146,7 @@ void Session::on_read(beast::error_code ec, std::size_t /*n*/)
 
         std::cout << "[session] Rate limited: " << client_ip
                   << " — retry in " << wait << "s\n";
+                  log_telemetry(429);
         do_write(make_rate_limit_response(wait));
         return;
     }
@@ -165,8 +171,10 @@ void Session::on_read(beast::error_code ec, std::size_t /*n*/)
             res.set(http::field::content_type, "text/plain");
             res.set("X-Cache", "HIT");
             res.keep_alive(request_.keep_alive());
+            
             res.body() = std::move(cached.value());
             res.prepare_payload();
+            log_telemetry(200);
             do_write(std::move(res));
             return;
         }
@@ -212,14 +220,14 @@ void Session::proxy_request()
 void Session::on_proxy_response(beast::error_code                  ec,
                                 http::response<http::string_body>  backend_res)
 {
-    if (ec) {
+   if (ec) {
         std::cerr << "[session] Proxy error: " << ec.message() << "\n";
+        log_telemetry(502);
         do_write(make_error_response(
             http::status::bad_gateway,
             "Gateway error: could not reach backend\r\n"));
         return;
     }
-
     std::cout << "[session] Backend responded " << backend_res.result_int()
               << " for " << request_.method_string()
               << " " << request_.target() << "\n";
@@ -248,7 +256,7 @@ void Session::on_proxy_response(beast::error_code                  ec,
     res.keep_alive(request_.keep_alive());
     res.body() = std::move(backend_res.body());
     res.prepare_payload();
-
+    log_telemetry(res.result_int());
     do_write(std::move(res));
 }
 
@@ -382,6 +390,29 @@ void Session::add_cors_headers(http::response<http::string_body>& res) const
 }
 
 // ── Explicit close helper ─────────────────────────────────────────────────────
+// ── Stage 8: telemetry logging ────────────────────────────────────────────
+//
+// This is the ONLY telemetry-related code that runs on a worker thread.
+// It builds a small struct and calls telemetry_->log(), which just pushes
+// to an in-memory queue — no disk I/O happens here. The actual file write
+// happens later, on TelemetryLogger's own dedicated consumer thread.
+void Session::log_telemetry(int status_code)
+{
+    if (!telemetry_) return;   // telemetry disabled (nullptr) — no-op
+
+    auto now = std::chrono::steady_clock::now();
+    double latency_ms =
+        std::chrono::duration<double, std::milli>(now - request_start_).count();
+
+    TelemetryEvent event;
+    event.client_ip   = client_ip_;
+    event.path        = std::string{request_.target()};
+    event.status_code = status_code;
+    event.latency_ms  = latency_ms;
+    event.timestamp   = std::chrono::system_clock::now();
+
+    telemetry_->log(std::move(event));
+}
 
 void Session::do_close()
 {

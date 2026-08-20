@@ -27,6 +27,8 @@ endif()
 find_package(Boost 1.74 REQUIRED COMPONENTS system thread)
 find_package(Threads REQUIRED)          # pthreads on Linux, native on Windows
 
+find_package(mongocxx REQUIRED)
+find_package(bsoncxx REQUIRED)
 # On Windows with MSVC, Beast uses some deprecated Winsock APIs that trigger
 # warnings.  Suppress them so our -WX (warnings-as-errors) flag doesn't fire
 # on code we don't own.
@@ -49,11 +51,14 @@ add_executable(aegis
     src/proxy.cpp
 )
 
+
 target_link_libraries(aegis
     PRIVATE
         Boost::system
         Boost::thread
         Threads::Threads
+        mongo::mongocxx_shared
+        mongo::bsoncxx_shared
 )
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
