@@ -41,9 +41,10 @@ public:
                     std::size_t   cache_capacity   = 256,
                     std::string   backend_host     = "localhost",
                     std::string   backend_port     = "9090",
-                    std::uint32_t stats_interval_s = 10,
-                    std::string   telemetry_log_path = "telemetry.jsonl");
-
+                                        std::uint32_t stats_interval_s = 10,
+                    std::string   mongo_uri        = "mongodb://localhost:27017",
+                    std::string   mongo_db         = "aegis",
+                    std::string   mongo_collection = "telemetry");
     void run();
     void stop();
 

@@ -20,7 +20,9 @@ Server::Server(std::uint16_t port,
                std::string   backend_host,
                std::string   backend_port,
                std::uint32_t stats_interval_s,
-               std::string   telemetry_log_path)
+               std::string   mongo_uri,
+               std::string   mongo_db,
+               std::string   mongo_collection)
     : io_ctx_{}
     , acceptor_{io_ctx_, tcp::endpoint{tcp::v4(), port}}
     , work_guard_{net::make_work_guard(io_ctx_)}
@@ -30,7 +32,7 @@ Server::Server(std::uint16_t port,
     , rate_limiter_{std::make_shared<RateLimiter>(rl_capacity, rl_refill_rate)}
     , cache_{std::make_shared<ResponseCache>(cache_capacity)}
     , stats_{std::make_shared<AtomicStats>()}
-    , telemetry_{std::make_shared<TelemetryLogger>(telemetry_log_path)}
+    , telemetry_{std::make_shared<TelemetryLogger>(mongo_uri, mongo_db, mongo_collection)}
 {
     backend_host_ = std::move(backend_host);
     backend_port_ = std::move(backend_port);

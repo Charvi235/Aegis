@@ -43,7 +43,10 @@ int main(int argc, char* argv[])
     std::size_t   cache_capacity   = 256;
     std::string   backend_host     = "localhost";
     std::string   backend_port     = "9090";
-    std::uint32_t stats_interval_s = 10;
+       std::uint32_t stats_interval_s = 10;
+    std::string   mongo_uri        = "mongodb://localhost:27017";
+    std::string   mongo_db         = "aegis";
+    std::string   mongo_collection = "telemetry";
 
     try {
         if (argc >= 2) port             = static_cast<std::uint16_t>(std::stoi(argv[1]));
@@ -54,6 +57,9 @@ int main(int argc, char* argv[])
         if (argc >= 7) backend_host     = argv[6];
         if (argc >= 8) backend_port     = argv[7];
         if (argc >= 9) stats_interval_s = static_cast<std::uint32_t>(std::stoi(argv[8]));
+        if (argc >= 10) mongo_uri        = argv[9];
+        if (argc >= 11) mongo_db         = argv[10];
+        if (argc >= 12) mongo_collection = argv[11];
     } catch (const std::exception& e) {
         std::cerr << "[main] Bad argument: " << e.what() << "\n";
         std::cerr << "Usage: " << argv[0]
@@ -67,9 +73,10 @@ int main(int argc, char* argv[])
     std::signal(SIGTERM, handle_signal);
 
     try {
-        aegis::Server server{port, num_threads, rl_capacity, rl_refill_rate,
+                aegis::Server server{port, num_threads, rl_capacity, rl_refill_rate,
                               cache_capacity, backend_host, backend_port,
-                              stats_interval_s};
+                              stats_interval_s, mongo_uri, mongo_db,
+                              mongo_collection};
         g_server = &server;
         server.run();
         g_server = nullptr;
